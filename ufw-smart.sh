@@ -8,27 +8,29 @@ YELLOW="\033[33m"
 BLUE="\033[34m"
 NC="\033[0m"
 
-SCRIPT_NAME="$(basename "$0")"
-
 print_ok() {
-  echo -e "${GREEN}[OK]${NC} $1"
+  echo -e "${GREEN}[OK]${NC} $1" >&2
 }
 
 print_warn() {
-  echo -e "${YELLOW}[WARN]${NC} $1"
+  echo -e "${YELLOW}[WARN]${NC} $1" >&2
 }
 
 print_err() {
-  echo -e "${RED}[ERROR]${NC} $1"
+  echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 print_info() {
-  echo -e "${BLUE}[INFO]${NC} $1"
+  echo -e "${BLUE}[INFO]${NC} $1" >&2
 }
 
 pause() {
-  echo
+  echo >&2
   read -rp "Нажми Enter для продолжения..."
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
 }
 
 run_as_root() {
@@ -36,10 +38,6 @@ run_as_root() {
     print_warn "Скрипт нужно запускать от root. Перезапускаю через sudo..."
     exec sudo bash "$0" "$@"
   fi
-}
-
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
 }
 
 detect_pkg_manager() {
@@ -147,7 +145,7 @@ get_ssh_server_port() {
 
   if [[ -f /etc/ssh/sshd_config ]]; then
     local p
-    p="$(grep -Ei '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config | tail -n1 | awk '{print $2}')"
+    p="$(grep -Ei '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config | tail -n1 | awk '{print $2}' || true)"
     if [[ -n "$p" ]]; then
       echo "$p"
       return
@@ -155,6 +153,10 @@ get_ssh_server_port() {
   fi
 
   echo "22"
+}
+
+get_ufw_status_word() {
+  ufw status | awk 'NR==1 {print tolower($2)}'
 }
 
 is_valid_ip_or_cidr() {
@@ -188,6 +190,7 @@ ip_in_list() {
   fi
 
   if ! command_exists python3; then
+    local item
     for item in "${ip_list[@]}"; do
       [[ "$client_ip" == "$item" ]] && return 0
     done
@@ -240,22 +243,33 @@ parse_ip_list() {
   printf '%s\n' "${result[@]}"
 }
 
+validate_port() {
+  local port="$1"
+
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    return 1
+  fi
+
+  return 0
+}
+
 ensure_ufw_enabled_safely() {
   local status
   local ssh_port
   local client_ip
+  local answer
 
-  status="$(ufw status | head -n1 || true)"
+  status="$(get_ufw_status_word || true)"
   ssh_port="$(get_ssh_server_port)"
   client_ip="$(get_ssh_client_ip)"
 
-  if echo "$status" | grep -qi "inactive"; then
+  if [[ "$status" == "inactive" || -z "$status" ]]; then
     print_warn "ufw сейчас выключен."
 
     if [[ -n "$client_ip" ]]; then
       print_warn "Ты подключен по SSH с IP: $client_ip"
-      print_warn "Текущий SSH-порт выглядит как: $ssh_port"
-      echo
+      print_warn "Текущий SSH-порт определён как: $ssh_port"
+      echo >&2
       read -rp "Перед включением ufw разрешить SSH только с твоего текущего IP? [Y/n]: " answer
 
       case "${answer,,}" in
@@ -282,7 +296,7 @@ ensure_ufw_enabled_safely() {
       esac
     fi
 
-    echo
+    echo >&2
     print_info "Рекомендуемая базовая политика: deny incoming, allow outgoing."
     read -rp "Применить базовую политику и включить ufw? [Y/n]: " answer
 
@@ -303,9 +317,9 @@ ensure_ufw_enabled_safely() {
 }
 
 show_rules() {
-  echo
+  echo >&2
   print_info "Текущие правила ufw:"
-  echo
+  echo >&2
   ufw status numbered verbose
 }
 
@@ -313,11 +327,11 @@ ask_protocol() {
   local default_proto="${1:-tcp}"
   local choice
 
-  echo
-  echo "Выбери протокол:"
-  echo "1) TCP"
-  echo "2) UDP"
-  echo "3) TCP + UDP"
+  echo >&2
+  echo "Выбери протокол:" >&2
+  echo "1) TCP" >&2
+  echo "2) UDP" >&2
+  echo "3) TCP + UDP" >&2
   read -rp "Выбор [по умолчанию: $default_proto]: " choice
 
   case "$choice" in
@@ -337,10 +351,10 @@ ask_protocol() {
 ask_scope() {
   local choice
 
-  echo
-  echo "Выбери доступ:"
-  echo "1) Anywhere"
-  echo "2) Только конкретные IP/CIDR"
+  echo >&2
+  echo "Выбери доступ:" >&2
+  echo "1) Anywhere" >&2
+  echo "2) Только конкретные IP/CIDR" >&2
   read -rp "Выбор [1]: " choice
 
   case "$choice" in
@@ -353,17 +367,31 @@ ask_ip_list() {
   local raw
   local parsed
 
-  echo
-  echo "Можно указать один IP, несколько IP через запятую или пробел, либо CIDR."
-  echo "Пример:"
-  echo "  1.2.3.4"
-  echo "  1.2.3.4, 5.6.7.8"
-  echo "  192.168.1.0/24 10.10.10.10"
-  echo
+  echo >&2
+  echo "Можно указать один IP, несколько IP через запятую или пробел, либо CIDR." >&2
+  echo "Пример:" >&2
+  echo "  1.2.3.4" >&2
+  echo "  1.2.3.4, 5.6.7.8" >&2
+  echo "  192.168.1.0/24 10.10.10.10" >&2
+  echo >&2
   read -rp "IP/CIDR: " raw
 
   parsed="$(parse_ip_list "$raw")" || return 1
   echo "$parsed"
+}
+
+ask_custom_port() {
+  local port
+
+  echo >&2
+  read -rp "Введи порт от 1 до 65535: " port
+
+  if ! validate_port "$port"; then
+    print_err "Некорректный порт: $port"
+    return 1
+  fi
+
+  echo "$port"
 }
 
 confirm_ssh_acl_safety() {
@@ -372,6 +400,8 @@ confirm_ssh_acl_safety() {
   local ip_list=("$@")
   local ssh_port
   local client_ip
+  local answer
+  local confirm
 
   ssh_port="$(get_ssh_server_port)"
   client_ip="$(get_ssh_client_ip)"
@@ -392,7 +422,7 @@ confirm_ssh_acl_safety() {
     return 0
   fi
 
-  echo
+  echo >&2
   print_warn "ВНИМАНИЕ: ты подключен по SSH с IP: $client_ip"
   print_warn "Но этот IP не входит в список ACL."
   print_warn "Если удалить Anywhere или закрыть SSH, можно потерять доступ."
@@ -419,6 +449,12 @@ apply_allow_rule() {
   shift 4
   local ip_list=("$@")
   local p
+  local ip
+
+  if ! validate_port "$port"; then
+    print_err "Некорректный порт: $port"
+    return 1
+  fi
 
   if [[ "$proto" == "both" ]]; then
     for p in tcp udp; do
@@ -427,19 +463,31 @@ apply_allow_rule() {
     return
   fi
 
+  if [[ "$proto" != "tcp" && "$proto" != "udp" ]]; then
+    print_err "Некорректный протокол: $proto"
+    return 1
+  fi
+
   if [[ "$scope" == "anywhere" ]]; then
     ufw allow "$port/$proto" comment "$comment"
     print_ok "Открыто: Anywhere -> $proto/$port"
-  else
-    local ip
+  elif [[ "$scope" == "acl" ]]; then
+    if [[ "${#ip_list[@]}" -eq 0 ]]; then
+      print_err "Для ACL не передан список IP."
+      return 1
+    fi
+
     for ip in "${ip_list[@]}"; do
       ufw allow from "$ip" to any port "$port" proto "$proto" comment "$comment"
       print_ok "Открыто: $ip -> $proto/$port"
     done
+  else
+    print_err "Некорректный scope: $scope"
+    return 1
   fi
 }
 
-open_predefined_port() {
+open_port_interactive() {
   local service_name="$1"
   local port="$2"
   local forced_proto="${3:-}"
@@ -447,9 +495,10 @@ open_predefined_port() {
   local scope
   local ip_lines
   local ip_list=()
-  local extra_ip
+  local extra_ip=""
+  local rc
 
-  echo
+  echo >&2
   print_info "Настройка правила: $service_name, порт $port"
 
   if [[ "$forced_proto" == "both" ]]; then
@@ -471,7 +520,7 @@ open_predefined_port() {
     if [[ "$service_name" == "SSH" || "$port" == "$(get_ssh_server_port)" || "$port" == "22" ]]; then
       set +e
       extra_ip="$(confirm_ssh_acl_safety "$port" "${ip_list[@]}")"
-      local rc=$?
+      rc=$?
       set -e
 
       if [[ "$rc" -eq 2 && -n "$extra_ip" ]]; then
@@ -488,14 +537,22 @@ open_predefined_port() {
   reload_ufw
 }
 
+open_custom_port() {
+  local port
+
+  port="$(ask_custom_port)" || return
+  open_port_interactive "Custom port $port" "$port"
+}
+
 delete_rule_by_number() {
   local num
   local rule_line
   local ssh_port
+  local confirm
 
   show_rules
 
-  echo
+  echo >&2
   read -rp "Введи номер правила для удаления: " num
 
   if ! [[ "$num" =~ ^[0-9]+$ ]]; then
@@ -511,10 +568,10 @@ delete_rule_by_number() {
     return
   fi
 
-  echo
+  echo >&2
   print_info "Выбрано правило:"
-  echo "$rule_line"
-  echo
+  echo "$rule_line" >&2
+  echo >&2
 
   if echo "$rule_line" | grep -Eiq "(OpenSSH|SSH|(^|[^0-9])22(/tcp|/udp|[^0-9]|$)|(^|[^0-9])${ssh_port}(/tcp|/udp|[^0-9]|$))"; then
     print_warn "Это похоже на SSH-правило."
@@ -549,6 +606,8 @@ delete_anywhere_rules_for_port_proto() {
   local numbers=()
   local line
   local num
+  local confirm
+  local idx
 
   while IFS= read -r line; do
     if echo "$line" | grep -Eq "^\[[[:space:]]*[0-9]+\]" &&
@@ -590,15 +649,16 @@ restrict_existing_port_with_acl() {
   local proto
   local ip_lines
   local ip_list=()
-  local extra_ip
+  local extra_ip=""
   local delete_anywhere
+  local rc
 
   show_rules
 
-  echo
+  echo >&2
   read -rp "Введи порт, к которому нужно добавить ACL: " port
 
-  if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+  if ! validate_port "$port"; then
     print_err "Некорректный порт."
     return
   fi
@@ -611,7 +671,7 @@ restrict_existing_port_with_acl() {
   if [[ "$port" == "$(get_ssh_server_port)" || "$port" == "22" ]]; then
     set +e
     extra_ip="$(confirm_ssh_acl_safety "$port" "${ip_list[@]}")"
-    local rc=$?
+    rc=$?
     set -e
 
     if [[ "$rc" -eq 2 && -n "$extra_ip" ]]; then
@@ -625,7 +685,7 @@ restrict_existing_port_with_acl() {
 
   apply_allow_rule "$port" "$proto" "acl" "SMART UFW ACL for port $port" "${ip_list[@]}"
 
-  echo
+  echo >&2
   print_warn "ACL добавлен. Но если раньше был открыт Anywhere, он останется, пока его не удалить."
   read -rp "Удалить Anywhere-правила для этого порта/протокола? [y/N]: " delete_anywhere
 
@@ -647,23 +707,26 @@ restrict_existing_port_with_acl() {
 }
 
 reload_ufw() {
-  echo
+  echo >&2
   print_info "Перезагружаю правила ufw..."
-  ufw reload || {
-    print_warn "ufw reload не сработал. Пробую ufw --force enable..."
-    ufw --force enable
-  }
 
-  print_ok "Правила ufw загружены."
+  if ufw reload; then
+    print_ok "Правила ufw загружены."
+    return
+  fi
+
+  print_warn "ufw reload не сработал. Пробую ufw --force enable..."
+  ufw --force enable
+  print_ok "ufw включен и правила загружены."
 }
 
 main_menu() {
   local ssh_port
   local choice
 
-  ssh_port="$(get_ssh_server_port)"
-
   while true; do
+    ssh_port="$(get_ssh_server_port)"
+
     clear
     echo "============================================"
     echo " SMART UFW MANAGER"
@@ -677,50 +740,55 @@ main_menu() {
     echo "3) Открыть 80"
     echo "4) Открыть 2053"
     echo "5) Открыть 500 TCP + UDP"
+    echo "6) Открыть свой порт"
     echo
     echo "Управление правилами:"
-    echo "6) Показать текущие правила"
-    echo "7) Удалить правило по номеру"
-    echo "8) Добавить ACL к существующему порту"
-    echo "9) Перезагрузить ufw rules"
+    echo "7) Показать текущие правила"
+    echo "8) Удалить правило по номеру"
+    echo "9) Добавить ACL к существующему порту"
+    echo "10) Перезагрузить ufw rules"
     echo "0) Выход"
     echo
     read -rp "Выбор: " choice
 
     case "$choice" in
       1)
-        open_predefined_port "SSH" "$ssh_port" "tcp"
+        open_port_interactive "SSH" "$ssh_port" "tcp"
         pause
         ;;
       2)
-        open_predefined_port "HTTPS 443" "443"
+        open_port_interactive "HTTPS 443" "443"
         pause
         ;;
       3)
-        open_predefined_port "HTTP 80" "80"
+        open_port_interactive "HTTP 80" "80"
         pause
         ;;
       4)
-        open_predefined_port "Port 2053" "2053"
+        open_port_interactive "Port 2053" "2053"
         pause
         ;;
       5)
-        open_predefined_port "Port 500" "500" "both"
+        open_port_interactive "Port 500" "500" "both"
         pause
         ;;
       6)
-        show_rules
+        open_custom_port
         pause
         ;;
       7)
-        delete_rule_by_number
+        show_rules
         pause
         ;;
       8)
-        restrict_existing_port_with_acl
+        delete_rule_by_number
         pause
         ;;
       9)
+        restrict_existing_port_with_acl
+        pause
+        ;;
+      10)
         reload_ufw
         show_rules
         pause
